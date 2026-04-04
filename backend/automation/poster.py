@@ -18,7 +18,7 @@ async def post_to_facebook(media_paths: List[str], caption: str, tags: List[str]
         
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
-            headless=True if is_server else False, # Set to True in production
+            headless=True, # Set to True in production
             args=["--disable-notifications", "--start-maximized", "--no-sandbox", "--disable-setuid-sandbox"],
             no_viewport=True
         )

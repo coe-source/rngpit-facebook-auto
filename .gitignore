@@ -8,10 +8,10 @@ venv/
 
 # SQLite Databases (we don't want to upload local development db)
 *.sqlite3
-*.db
+# *.db (allowing DB to sync to Railway)
 
 # Facebook Automation Data
-backend/fb_session_data/
+# backend/fb_session_data/ (allowing facebook session to sync to Railway)
 backend/uploads/
 
 # IDEs
