@@ -4,19 +4,36 @@ import asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from core.database import engine, Base
 import os
 
-# Create DB tables
-Base.metadata.create_all(bind=engine)
+from core.database import engine, Base
+from core import models  # Import models so they are registered with Base
 
-# Create folders for uploads if they don't exist
-os.makedirs("uploads", exist_ok=True)
-os.makedirs("uploads/flyers", exist_ok=True)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    ADVANCED LEVEL: Lifespan hook ensures database schemas and dynamic folders
+    are created strictly AFTER FastAPI starts and BEFORE requests are accepted.
+    This resolves the missing table issues on serverless / Railway deployments.
+    """
+    print("🚀 [Lifespan] Initializing System Resources...")
+    
+    # 1. Ensure DB schemas exist reliably
+    Base.metadata.create_all(bind=engine)
+    print("✅ [Lifespan] Database schema synchronized.")
+    
+    # 2. Ensure persistence folders exist natively
+    os.makedirs("uploads/flyers", exist_ok=True)
+    print("✅ [Lifespan] File directories verified.")
+    
+    yield  # Hand over control to FastAPI to start accepting requests
+    
+    print("🛑 [Lifespan] Shutting down application gracefully...")
 
-app = FastAPI(title="RNGPIT Facebook Setup API")
+app = FastAPI(title="RNGPIT Facebook Setup API - Advanced Level", lifespan=lifespan)
 
 # Configure CORS for frontend access
 app.add_middleware(

@@ -268,8 +268,14 @@
     </div>
 
     <script>
-        // Use local backend so Playwright can launch the browser locally
-        const API_URL = 'https://rngpit-facebook-auto-production-12c3.up.railway.app';
+        // ADVANCED LEVEL: Enforced local backend so Playwright can launch the browser natively on your PC
+        const API_URL = 'http://127.0.0.1:8000';
+        
+        // Connectivity check
+        fetch(`${API_URL}/`).catch(e => {
+            console.error("Local Backend is down!", e);
+            setTimeout(() => showToast("WARNING: Local Backend is not running! Please start 'python main.py' to fix the database error.", "error"), 2000);
+        });
         let currentHistoryId = null;
         let selectedTags = [];
         let allFacultyData = [];
