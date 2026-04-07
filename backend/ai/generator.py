@@ -22,8 +22,8 @@ def generate_caption_and_tags(media_paths: list[str], all_faculty_names: list[st
         return "Check out our latest event at RNGPIT! 🎉 #RNGPIT #Engineering #CollegeEvent", all_faculty_names[:5]
 
     try:
-        # Choose a model that supports multimodal input
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Switch to latest supported model string to avoid 404 errors on older python libs
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         
         uploaded_files = []
         for path in media_paths:

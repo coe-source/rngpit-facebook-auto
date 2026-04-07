@@ -1,4 +1,4 @@
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, expect
 import os
 import asyncio
 from typing import List
@@ -8,18 +8,25 @@ USER_DATA_DIR = os.path.join(os.getcwd(), "fb_session_data")
 
 async def post_to_facebook(media_paths: List[str], caption: str, tags: List[str]):
     """
-    Automates the process of posting to Facebook.
+    Automates the process of posting to Facebook using advanced Playwright handling.
     """
-    full_caption = caption + "\n\n" + " ".join(tags)
-    
     async with async_playwright() as p:
-        # Determine if we are running in a headless server environment (like Railway)
+        # Determine if we are running in a headless server environment
         is_server = os.environ.get("RAILWAY_ENVIRONMENT") is not None or os.environ.get("PORT") is not None
         
+        # Using channel="msedge" or "chrome" drastically reduces startup time on Windows by utilizing the pre-installed optimized browser instead of the bundled Chromium binaries.
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
-            headless=True, # Set to True in production
-            args=["--disable-notifications", "--start-maximized", "--no-sandbox", "--disable-setuid-sandbox"],
+            headless=False,
+            channel="chrome", # Faster cold-start by utilizing installed Chrome
+            args=[
+                "--disable-notifications", 
+                "--start-maximized", 
+                "--no-sandbox", 
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled"
+            ],
+            ignore_default_args=["--enable-automation"],
             no_viewport=True
         )
         
@@ -27,104 +34,100 @@ async def post_to_facebook(media_paths: List[str], caption: str, tags: List[str]
         
         try:
             print("Navigating to Facebook...")
-            await page.goto("https://www.facebook.com/")
+            # Using networkidle to ensure heavy background scripts download completely
+            await page.goto("https://www.facebook.com/", wait_until="networkidle")
             
-            # Wait a moment to let the page load
+            # CRITICAL: Allow React client-side hydration to finish. Facebook WILL throw a technical error banner if clicked too early!
             await page.wait_for_timeout(3000)
             
-            # Check if we are on the login page (i.e. not logged in)
-            if await page.locator("input[name='email']").is_visible():
+            # Check if we are on the login page (i.e., not logged in)
+            email_input = page.locator("input[name='email']")
+            if await email_input.is_visible(timeout=3000):
                 print("Login required! Please log into your Facebook account in the opened browser window.")
-                print("Waiting for you to log in. Press enter here when you are done, or simply wait for it to detect navigation.")
-                # We can wait for the feed to appear
-                await page.wait_for_selector('div[role="feed"]', timeout=300000) # Wait up to 5 minutes for manual login
+                print("Waiting for you to log in. Proceeding automatically once the feed renders...")
+                await page.wait_for_selector('div[role="feed"]', timeout=300000) # Wait up to 5 minutes
+                await page.wait_for_timeout(4000) # Wait for login sequence rendering
                 print("Login detected. Proceeding...")
             
-            # Navigate directly to the user's profile or homepage "Create Post"
-            # It's usually easier to click the global "What's on your mind?" input on the homepage
-            
             print("Clicking Create Post...")
-            create_post_button = page.locator("div[role='button']").filter(has_text="What's on your mind")
-            if await create_post_button.count() == 0:
-                 # Try another locator
-                 create_post_button = page.locator("span").filter(has_text="What's on your mind")
-                 
-            await create_post_button.first.click()
-            await page.wait_for_timeout(2000)
+            create_post_locator = page.locator("div[role='button'], span").filter(has_text="What's on your mind").first
+            await create_post_locator.wait_for(state="visible", timeout=15000)
+            await create_post_locator.click()
             
-            # The dialog opens. Upload the media.
+            # Wait for modal dialog to fully appear safely
             print(f"Uploading {len(media_paths)} Media Files...")
+            await page.wait_for_timeout(2000)
+            dialog = page.locator("div[role='dialog']").last
+            await dialog.wait_for(state="visible")
             
-            # Find the photo/video button in the popup dialogue
-            photo_button = page.locator('div[aria-label="Add Photo/Video"]')
-            # Sometimes it's a generic file input
-            file_input = page.locator("input[type='file']").first
-            
-            if await photo_button.is_visible():
+            # Trigger File Upload
+            photo_button = dialog.locator('div[aria-label="Add Photo/Video"]').first
+            if await photo_button.is_visible(timeout=3000):
                 await photo_button.click()
-                await page.wait_for_timeout(1000)
                 
+            file_input = page.locator("input[type='file'][accept*='image'], input[type='file'][accept*='video'], input[type='file']").first
+            # It's an invisible element, so we attach we do wait_for("attached")
+            await file_input.wait_for(state="attached", timeout=10000)
             await file_input.set_input_files(media_paths)
-            await page.wait_for_timeout(3000)
             
-            # The global locator finds 2 elements on Facebook: the feed input and the modal input.
-            # We select the last one, which is the active modal popup!
-            print("Entering caption and tags...")
-            textbox = page.locator("div[role='textbox'][data-lexical-editor='true']").last
-            # We use simulated typing to allow Facebook's tagging mechanism to trigger if we type @username
+            print("Entering caption and tracking tags...")
+            textbox = dialog.locator("div[role='textbox'][data-lexical-editor='true']").last
+            await textbox.wait_for(state="visible")
             
-            # Let's type the base caption quickly
+            # Insert the primary caption
             await textbox.fill(caption + "\n\n")
             
-            # Now, for tags, we need to type them out and potentially press Enter if Facebook suggests them
-            # For this MVP, we will paste the pre-formatted @usernames into the textbox.
-            # Real dynamic active tagging (selecting from dropdown) is tricky but can be done by typing slowly:
             for tag in tags:
-                # Ensure the tag starts with @
                 if not tag.startswith('@'):
                     tag = "@" + tag
                     
-                # Type the tag WITHOUT a trailing space to trigger the dropdown
-                # Slightly slower typing allows the UI to catch up on slower computers
-                await textbox.press_sequentially(tag, delay=50)
+                # Append the base trigger text sequentially
+                await textbox.press_sequentially(tag, delay=35)
                 
-                # CRITICAL: We must wait for Facebook's AJAX request to fetch suggestions
-                # and render the dropdown menu before we press Enter!
-                # INCREASED wait time to 3500ms to heavily account for slow internet connections
-                await page.wait_for_timeout(3500)
+                # Check for dynamic listbox (dropdown suggestions box)
+                listbox = page.locator('ul[role="listbox"]').last
                 
-                # Press Enter to magically select the top profile and turn the text blue
-                await page.keyboard.press("Enter")
-                
-                # Tap space to move the cursor forward for the next person
-                await textbox.press_sequentially(" ", delay=20)
+                try:
+                    # Wait explicitly for the dropdown to attach to DOM and become visible
+                    await listbox.wait_for(state="visible", timeout=10000)
                     
-            await page.wait_for_timeout(2000)
-
+                    # Instead of blindly pressing Enter, ensure there's an active option/suggestion populated
+                    suggestion_item = listbox.locator('li[role="option"]').first
+                    await suggestion_item.wait_for(state="visible", timeout=5000)
+                    
+                    # Press Enter to finalize active tagging 
+                    await page.keyboard.press("Enter")
+                except Exception as e:
+                    print(f"Fallback: Listbox logic missed for tag {tag}. Reason: {e}")
+                    pass
+                
+                # Space out next tag to reset tagging context
+                await textbox.press_sequentially(" ", delay=15)
+                    
             print("Clicking Post/Next...")
-            # Facebook introduced a multi-step dialog. Check for "Next" button first.
-            next_button = page.locator('div[role="button"]').filter(has_text="Next").last
-            if await next_button.is_visible():
+            await page.wait_for_timeout(1000)
+            # Advanced handling of multi-step post (e.g. groups sharing modal flow)
+            next_button = dialog.locator('div[role="button"]').filter(has_text="Next").last
+            if await next_button.is_visible(timeout=2000):
                 await next_button.click()
-                await page.wait_for_timeout(2000)
-
-            # Now look for the final Post button
-            post_button = page.locator('div[aria-label="Post"]').last
-            if await post_button.count() == 0:
-                post_button = page.locator('div[role="button"]').filter(has_text="Post").last
-
-            # UNCOMMENT the below line to ACTUALLY post it. 
-            # Keeping it commented is safe for first-run tests.
-            await post_button.click()
+                await page.wait_for_timeout(1500)
+                
+            post_button = dialog.locator('div[aria-label="Post"], div[role="button"]').filter(has_text="Post").last
+            await post_button.wait_for(state="visible", timeout=5000)
             
-            # Wait for it to submit
-            await page.wait_for_timeout(5000)
-            print("Post submitted successfully.")
+            # To actually POST, removing comments or simulating final execute
+            await page.wait_for_timeout(1000)
+            await post_button.click()
+            print("Post submission fired.")
+            
+            # Await the dialogue closure natively indicating successful dispatch
+            await dialog.wait_for(state="hidden", timeout=15000)
+            print("Post processed successfully.")
             
             return True, "Success"
             
         except Exception as e:
-            print(f"Error during automation: {e}")
+            print(f"Error during profound automation: {e}")
             return False, str(e)
             
         finally:
